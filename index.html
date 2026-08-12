@@ -51,7 +51,12 @@
   #heatFill{height:100%;width:5%;border-radius:2px;background:linear-gradient(90deg,#59c96a,#ffd447 52%,#ff5a3c);transition:width .25s}
   #heatTicks{position:absolute;inset:2px;border-radius:2px;background:repeating-linear-gradient(90deg,transparent 0,transparent 8.85%,rgba(26,10,4,.6) 8.85%,rgba(26,10,4,.6) 10%)}
   .notch{position:absolute;top:-4px;bottom:-4px;width:3px;background:#2a1408;box-shadow:0 0 0 1px rgba(253,244,217,.55)}
-  #obj{top:16px;right:16px;text-align:center;font-size:12.5px;max-width:330px;padding:8px 16px 9px;line-height:1.5}
+  #obj{top:16px;right:16px;text-align:center;font-size:12.5px;max-width:330px;padding:8px 16px 9px;line-height:1.5;transition:transform .3s cubic-bezier(.4,0,.2,1),opacity .3s}
+  /* mobile: objective card becomes a slide-out drawer behind a flag tab */
+  body.touchMode #obj{transform:translateX(calc(100% + 34px)) scale(.78);transform-origin:top right;opacity:0;pointer-events:auto}
+  body.touchMode.objOpen #obj{transform:scale(.78);opacity:1}
+  #objTab{position:fixed;top:12px;right:10px;z-index:14;width:46px;height:46px;border-radius:50%;border:2.5px solid rgba(255,233,201,.55);background:rgba(18,9,24,.6);display:flex;align-items:center;justify-content:center;font-size:20px;touch-action:none}
+  body.touchMode.objOpen #objTab{background:rgba(255,233,201,.3);border-color:rgba(255,212,71,.8)}
   #obj b{display:block;font-size:15px;font-weight:bold;letter-spacing:2px;padding-bottom:3px;margin-bottom:4px;border-bottom:3px solid #c2402e}
   #obj #objSub{color:#6b482a}
   #toast{left:50%;bottom:15%;transform:translateX(-50%);font-size:16px;font-weight:bold;letter-spacing:1px;opacity:0;transition:opacity .3s;padding:9px 20px}
@@ -81,7 +86,6 @@
   body.liteFx .ts{backdrop-filter:none;-webkit-backdrop-filter:none;background:linear-gradient(rgba(30,20,45,.28),transparent)} /* auto perf fallback: blur off, tint keeps the framing */
   @media (max-width:880px){
     #heatBox{transform:scale(.78);transform-origin:top left}
-    #obj{transform:scale(.78);transform-origin:top right}
     #toast{font-size:14px;bottom:34%}
   }
   #big{position:fixed;inset:0;z-index:9;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(16,8,26,.72);text-align:center}
@@ -112,6 +116,7 @@
 <div id="toast" class="hud plq"></div>
 <div id="keys" class="hud"><b>WASD</b> run · <b>SHIFT</b> sprint · <b>CTRL</b> sneak · <b>E</b> hide / interact · <b>SPACE</b> jump · <b>Q</b> dodge</div>
 <div id="mCtl">
+  <div id="objTab">🏁</div>
   <div id="joyZone"></div><div id="joyBase"></div><div id="joyKnob"></div>
   <div id="btnJump" class="mBtn">JUMP</div>
   <div id="btnAct" class="mBtn off">USE</div>
@@ -1521,6 +1526,15 @@ function syncSneakBtn(){ const b=document.getElementById('btnSneak'); if(b) b.cl
     if(inited) return; inited = true;
     document.body.classList.add('touchMode');
     const os=document.getElementById('objSub'); if(os) os.textContent='stay out of sight · USE button to hide in bushes';
+    // objective drawer: shown briefly at start, then slides away behind the flag tab.
+    // Timer anchors to the FIRST RENDERED FRAME — scene build can stall for seconds, and a
+    // wall-clock timer would close the drawer before the player ever saw it.
+    document.body.classList.add('objOpen');
+    let objTimer=null;
+    requestAnimationFrame(()=>{ objTimer=setTimeout(()=>document.body.classList.remove('objOpen'), 5000); });
+    const objToggle=e=>{ clearTimeout(objTimer); document.body.classList.toggle('objOpen'); e.preventDefault(); };
+    document.getElementById('objTab').addEventListener('pointerdown', objToggle);
+    document.getElementById('obj').addEventListener('pointerdown', objToggle); // tapping the open card dismisses it
     renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); // phone GPUs: don't push 3x density through the glow decals
     // block pull-to-refresh / scroll while playing
     document.addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
@@ -1559,10 +1573,14 @@ function syncSneakBtn(){ const b=document.getElementById('btnSneak'); if(b) b.cl
       else if(player.carryingGnome && (player.x-21)**2+(player.z+30)**2<7) label='GIVE';
       act.textContent = label || 'USE'; act.classList.toggle('off', !label);
     }, 150);
-    // --- auto perf fallback: if the tilt-shift blur drags the phone below ~28fps, swap it for a cheap tint ---
-    let frames=0; const t0=performance.now();
-    const cnt=()=>{ frames++; if(performance.now()-t0<4000) requestAnimationFrame(cnt);
-      else if(frames/((performance.now()-t0)/1000) < 28) document.body.classList.add('liteFx'); };
+    // --- auto perf fallback: if the tilt-shift blur drags the phone below ~28fps, swap it for a cheap tint.
+    // Warm-up: skip the scene-build stall (start counting at the 2nd frame) and demand a real sample
+    // (≥12 frames) before judging, so a slow LOAD can't false-positive steady-state fps. ---
+    let frames=-1, t0=0;
+    const cnt=()=>{ frames++; if(frames===0) t0=performance.now();
+      const el=performance.now()-t0;
+      if(frames<12 || el<3000) requestAnimationFrame(cnt);
+      else if(frames/(el/1000) < 28) document.body.classList.add('liteFx'); };
     requestAnimationFrame(cnt);
   }
   if(coarse) enableTouch();
@@ -1570,6 +1588,43 @@ function syncSneakBtn(){ const b=document.getElementById('btnSneak'); if(b) b.cl
 })();
 // busted / win overlay: tap anywhere to retry (phones have no R key)
 document.getElementById('big').addEventListener('pointerdown', ()=>{ if(player.caught||player.won) location.reload(); });
+
+/* ============ interactable affordance markers ============
+   A soft cyan chevron floats over anything you can USE, fading in as you approach (≤7u)
+   and pulsing bright inside actual interact range — same cyan family as the player's own
+   stealth signals, so it never reads as a guard cue (those stay amber/red). */
+const _imTex = (()=>{ const cv=document.createElement('canvas'); cv.width=96; cv.height=96; const g=cv.getContext('2d');
+  const grd=g.createRadialGradient(48,44,4,48,44,42); grd.addColorStop(0,'rgba(140,230,255,.55)'); grd.addColorStop(1,'rgba(140,230,255,0)');
+  g.fillStyle=grd; g.fillRect(0,0,96,96);                                     // soft glow halo
+  g.lineJoin='round'; g.lineWidth=10; g.strokeStyle='rgba(10,20,32,.9)';       // dark outline chevron
+  g.beginPath(); g.moveTo(26,34); g.lineTo(48,58); g.lineTo(70,34); g.stroke();
+  g.lineWidth=5.5; g.strokeStyle='#8ce6ff';                                    // cyan chevron
+  g.beginPath(); g.moveTo(26,34); g.lineTo(48,58); g.lineTo(70,34); g.stroke();
+  return new THREE.CanvasTexture(cv); })();
+const iMarkers = [];
+function iMarker(x, z, h, useR2, active){
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:_imTex, depthTest:false, transparent:true, opacity:0}));
+  sp.scale.set(0.9,0.9,1); sp.position.set(x,h,z); sp.renderOrder=6; sp.visible=false; scene.add(sp);
+  iMarkers.push({sp, x, z, h, useR2, active}); return sp;
+}
+for(const s of sprinklers) iMarker(s.x, s.z, 1.35, 2.6, ()=>true);
+for(const c of cans)       iMarker(c.x, c.z, 1.95, 2.6, ()=>!c.used);
+for(const b of bushes)     iMarker(b.x, b.z, 2.15, (b.r+0.4)**2, ()=>player.y<=0.2 && !player.hiding);
+iMarker(gnome.position.x, gnome.position.z, 2.0, 2.9, ()=>!player.carryingGnome && !player.gnomeDone);
+iMarker(21, -30, 2.7, 7, ()=>player.carryingGnome);   // judge stand lights up only while carrying the gnome
+setInterval(()=>{ if(SHOT || frozen || player.caught || player.won){ iMarkers.forEach(m=>m.sp.visible=false); return; } const t=performance.now()/1000;
+  for(const m of iMarkers){
+    const on = m.active(); const d2 = (player.x-m.x)**2 + (player.z-m.z)**2;
+    if(!on || d2 > 49){ m.sp.visible=false; continue; }                        // fade window: 7u
+    const near = d2 <= m.useR2;                                                // inside actual USE range
+    const k = 1 - Math.max(0, Math.sqrt(d2)-Math.sqrt(m.useR2)) / (7-Math.sqrt(m.useR2));
+    m.sp.visible = true;
+    m.sp.material.opacity = near? 0.95 : 0.25 + 0.45*k;
+    const s = (near? 1.05 + 0.13*Math.sin(t*6) : 0.75 + 0.15*k);
+    m.sp.scale.set(s, s, 1);
+    m.sp.position.y = m.h + 0.1*Math.sin(t*2.4 + m.x);                         // gentle bob
+  }
+}, 80);
 
 function interact(){
   if(player.caught||player.won) return;
